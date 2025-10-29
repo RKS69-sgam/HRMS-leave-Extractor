@@ -1,8 +1,9 @@
 import streamlit as st
 import pandas as pd
 import re
-from datetime import datetime, timedelta
+from datetime import datetime
 import io
+import numpy as np
 
 # --- 1. Core Parsing and Splitting Logic Functions ---
 
@@ -10,6 +11,7 @@ def get_half_day_value(date_str):
     """Converts a date string (e.g., '17/09/2025FN') into a half-day numeric value for calculation."""
     match = re.search(r'(\d{2}/\d{2}/\d{4})(FN|AN)', date_str)
     if not match:
+        # For calculation, a precise FN/AN is needed.
         raise ValueError(f"Invalid date format: {date_str}")
     
     date_part, half_day_part = match.groups()
@@ -17,7 +19,19 @@ def get_half_day_value(date_str):
 
     # Value: ordinal * 2 + (0 for FN, 1 for AN)
     value = date_obj.toordinal() * 2 + (0 if half_day_part == 'FN' else 1)
-    return date_obj, value
+    return date_obj, value, half_day_part
+
+def calculate_leave_days(from_dt_str_full, to_dt_str_full):
+    """Calculates leave days based on FN/AN parts for a segment."""
+    try:
+        from_date_obj, from_value, _ = get_half_day_value(from_dt_str_full)
+        to_date_obj, to_value, _ = get_half_day_value(to_dt_str_full)
+        
+        # Total half-days = (to_value - from_value) + 1 (inclusive count)
+        total_half_days = (to_value - from_value) + 1
+        return total_half_days / 2
+    except ValueError:
+        return np.nan
 
 def parse_and_split_leave(row):
     """Parses leave details, splits records across the month boundary (30/09/2025 AN to 01/10/2025 FN)
@@ -29,7 +43,7 @@ def parse_and_split_leave(row):
     try:
         sept_30_an_boundary_val = get_half_day_value('30/09/2025AN')[1]
     except ValueError:
-        st.error("Boundary date '30/09/2025AN' is invalid. Please check.")
+        # If boundary is invalid, stop processing for this row
         return records
 
     # Regex to find all leave segments: (LeaveType) (Days.D) days (DateRange (SanctionAuthority))
@@ -51,22 +65,18 @@ def parse_and_split_leave(row):
             
             try:
                 # Extract half-day values
-                _, from_value = get_half_day_value(from_dt_str_full)
-                _, to_value = get_half_day_value(to_dt_str_full)
+                _, from_value, _ = get_half_day_value(from_dt_str_full)
+                _, to_value, _ = get_half_day_value(to_dt_str_full)
             except ValueError:
                 continue
 
-            # Calculate total days for this specific segment
-            segment_days_calculated = (to_value - from_value + 1) / 2
-            
-            # --- Splitting Logic ---
+            # --- Splitting Logic (User Requirement) ---
             is_splittable = leave_type in ['LAP', 'LHAP', 'COL']
             
             if is_splittable and from_value <= sept_30_an_boundary_val and to_value > sept_30_an_boundary_val:
                 # 1. September part (up to 30/09/2025 AN)
                 sept_part_to_dt_full = '30/09/2025AN'
-                sept_to_value = sept_30_an_boundary_val
-                sept_days = (sept_to_value - from_value + 1) / 2
+                sept_days = calculate_leave_days(from_dt_str_full, sept_part_to_dt_full)
                 
                 records.append({
                     'Name': row['Name'], 'HRMS ID': row['HRMS ID'], 'IPAS No': row['IPAS No'], 
@@ -77,8 +87,7 @@ def parse_and_split_leave(row):
 
                 # 2. October part (from 01/10/2025 FN to end date)
                 oct_part_from_dt_full = '01/10/2025FN'
-                _, oct_from_value = get_half_day_value(oct_part_from_dt_full)
-                oct_days = (to_value - oct_from_value + 1) / 2
+                oct_days = calculate_leave_days(oct_part_from_dt_full, to_dt_str_full)
                 
                 records.append({
                     'Name': row['Name'], 'HRMS ID': row['HRMS ID'], 'IPAS No': row['IPAS No'], 
@@ -89,6 +98,7 @@ def parse_and_split_leave(row):
 
             else:
                 # No splitting required
+                segment_days_calculated = calculate_leave_days(from_dt_str_full, to_dt_str_full)
                 records.append({
                     'Name': row['Name'], 'HRMS ID': row['HRMS ID'], 'IPAS No': row['IPAS No'], 
                     'Designation': row['Designation'], 'Leave Type': leave_type, 
@@ -104,6 +114,9 @@ st.set_page_config(layout="wide", page_title="Leave Data Processor")
 
 st.title(" लीव डेटा प्रोसेसर (Leave Data Processor) 🔄")
 st.markdown("---")
+st.info("यह टूल **LAP, LHAP, और COL** लीव को मासिक सीमा (30/09/2025) पर स्वचालित रूप से विभाजित करता है और आउटपुट तारीखों से FN/AN हटा देता है।")
+st.markdown("---")
+
 
 uploaded_file = st.file_uploader(
     "Excel (.xlsx) या CSV फ़ाइल अपलोड करें", 
@@ -135,11 +148,17 @@ if uploaded_file is not None:
             new_data = [item for sublist in parsed_results.tolist() for item in sublist]
             final_df = pd.DataFrame(new_data)
             
-            # Final Cleaning and Formatting
-            final_df['Leave Days'] = final_df['Leave Days'].round(1)
-            final_df.dropna(subset=['Leave Days'], inplace=True)
+            # --- FINAL CLEANING AND FORMATTING ---
+            
+            # 1. Remove FN/AN from Dates (User Request)
+            final_df['From Date'] = final_df['From Date'].astype(str).str.replace(r'(FN|AN)$', '', regex=True)
+            final_df['To Date'] = final_df['To Date'].astype(str).str.replace(r'(FN|AN)$', '', regex=True)
 
-            # Select and reorder the final columns
+            # 2. Drop rows with calculation issues and round Leave Days
+            final_df.dropna(subset=['Leave Days'], inplace=True)
+            final_df['Leave Days'] = final_df['Leave Days'].round(1)
+            
+            # 3. Select and reorder the final columns
             output_cols = [
                 'Name', 'HRMS ID', 'IPAS No', 'Designation', 'Leave Type',
                 'From Date', 'To Date', 'Leave Days', 'Sanction authority'
@@ -163,17 +182,20 @@ if uploaded_file is not None:
         st.download_button(
             label="⬇️ संरचित डेटा CSV फ़ाइल डाउनलोड करें",
             data=csv,
-            file_name='Structured_Leave_Report.csv',
+            file_name='Structured_Leave_Report_Clean.csv',
             mime='text/csv',
         )
 
     except Exception as e:
         st.error(f"⚠️ डेटा प्रोसेसिंग में त्रुटि (Error during data processing): {e}")
+        st.error("कृपया सुनिश्चित करें कि आपकी फ़ाइल का फॉर्मेट सही है और हेडर (शीर्षक पंक्ति) पिछली फ़ाइल जैसा ही है।")
 
 st.sidebar.markdown("---")
 st.sidebar.info(
     "**उपयोग के निर्देश:**\n"
-    "1. `leave_data_processor.py` फ़ाइल को सेव करें।\n"
-    "2. टर्मिनल में चलाएँ: `streamlit run leave_data_processor.py`\n"
+    "1. `leave_data_processor_clean.py` फ़ाइल को सेव करें।\n"
+    "2. टर्मिनल में चलाएँ: `streamlit run leave_data_processor_clean.py`\n"
     "3. ब्राउज़र में अपनी raw Excel/CSV फ़ाइल अपलोड करें।"
+)
+।"
                   )
