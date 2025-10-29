@@ -12,7 +12,6 @@ def get_half_day_value(date_str):
     match = re.search(r'(\d{2}/\d{2}/\d{4})(FN|AN)', date_str)
     if not match:
         raise ValueError(f"Invalid date format: {date_str}")
-    
     date_part, half_day_part = match.groups()
     date_obj = datetime.strptime(date_part, '%d/%m/%Y')
     value = date_obj.toordinal() * 2 + (0 if half_day_part == 'FN' else 1)
@@ -31,7 +30,7 @@ def calculate_leave_days(from_dt_str_full, to_dt_str_full):
 def parse_and_split_leave(row):
     """Parses leave details, splits records across the month boundary (30/09/2025 AN to 01/10/2025 FN)
     for LAP, LHAP, COL, and returns a list of dictionaries for each sanctioned segment."""
-    leave_details = str(row['Leave Details']) # Ensure it is a string
+    leave_details = str(row['Leave Details'])
     records = []
     
     try:
@@ -39,23 +38,14 @@ def parse_and_split_leave(row):
     except ValueError:
         return records
 
-    # *** FINAL ROBUST REGEX ***
-    # Pattern to find all segments: (LeaveType) (Days.D) days (Content_Inside_Brackets)
+    # Regex to find all segments: (LeaveType) (Days.D) days (Content_Inside_Brackets)
     leave_segments = re.findall(r'([A-Z]+)\s+([\d.]+)\s+days\s+\((.*?)\)', leave_details)
 
     for leave_type, total_days_str, date_ranges_str in leave_segments:
-        # Pattern to find each complete date-authority group. This is the most crucial part.
-        # It looks for DATE_FN/AN - DATE_FN/AN (ID) NAME
-        date_authority_groups = re.findall(r'(\d{2}/\d{2}/\d{4}FN|\d{2}/\d{2}/\d{4}AN)-(\d{2}/\d{2}/\d{4}FN|\d{2}/\d{2}/\d{4}AN)\s*\(([^)]*)\)', date_ranges_str)
+        # Pattern to find each complete date group: DATE_FN/AN - DATE_FN/AN (Anything_Inside_Brackets)
+        date_groups = re.findall(r'(\d{2}/\d{2}/\d{4}FN|\d{2}/\d{2}/\d{4}AN)-(\d{2}/\d{2}/\d{4}FN|\d{2}/\d{2}/\d{4}AN)\s*\(([^)]*)\)', date_ranges_str)
 
-        for from_dt_str_full, to_dt_str_full, authority_raw in date_authority_groups:
-            
-            # Extract authority ID and Name
-            auth_parts = authority_raw.split(')')
-            authority_id = auth_parts[0].strip()
-            authority_name = auth_parts[1].strip() if len(auth_parts) > 1 else ''
-            
-            sanction_authority = f"({authority_id}) {authority_name.strip()}"
+        for from_dt_str_full, to_dt_str_full, _ in date_groups: # Authority info is captured but ignored by '_'
             
             try:
                 _, from_value, _ = get_half_day_value(from_dt_str_full)
@@ -75,7 +65,7 @@ def parse_and_split_leave(row):
                     'Name': row['Name'], 'HRMS ID': row['HRMS ID'], 'IPAS No': row['IPAS No'], 
                     'Designation': row['Designation'], 'Leave Type': leave_type, 
                     'From Date': from_dt_str_full, 'To Date': sept_part_to_dt_full, 
-                    'Leave Days': sept_days, 'Sanction authority': sanction_authority
+                    'Leave Days': sept_days
                 })
 
                 # 2. October part
@@ -86,7 +76,7 @@ def parse_and_split_leave(row):
                     'Name': row['Name'], 'HRMS ID': row['HRMS ID'], 'IPAS No': row['IPAS No'], 
                     'Designation': row['Designation'], 'Leave Type': leave_type, 
                     'From Date': oct_part_from_dt_full, 'To Date': to_dt_str_full, 
-                    'Leave Days': oct_days, 'Sanction authority': sanction_authority
+                    'Leave Days': oct_days
                 })
 
             else:
@@ -96,7 +86,7 @@ def parse_and_split_leave(row):
                     'Name': row['Name'], 'HRMS ID': row['HRMS ID'], 'IPAS No': row['IPAS No'], 
                     'Designation': row['Designation'], 'Leave Type': leave_type, 
                     'From Date': from_dt_str_full, 'To Date': to_dt_str_full, 
-                    'Leave Days': segment_days_calculated, 'Sanction authority': sanction_authority
+                    'Leave Days': segment_days_calculated
                 })
 
     return records
@@ -107,7 +97,7 @@ st.set_page_config(layout="wide", page_title="Leave Data Processor")
 
 st.title(" लीव डेटा प्रोसेसर (Leave Data Processor) 🔄")
 st.markdown("---")
-st.info("यह अंतिम वर्ज़न पार्सिंग को मज़बूत करता है। यह **FN/AN** हटाकर आउटपुट देगा और **LAP, LHAP, COL** लीव को **30/09/2025** की सीमा पर विभाजित करेगा।")
+st.info("यह टूल **Sanction Authority** को हटाता है, **LAP, LHAP, COL** लीव को **30/09/2025** की सीमा पर विभाजित करता है, और तारीखों से **FN/AN** हटाता है।")
 st.markdown("---")
 
 
@@ -118,13 +108,13 @@ uploaded_file = st.file_uploader(
 
 if uploaded_file is not None:
     try:
+        # Load the data assuming the header is on the SECOND row (index 1)
         if uploaded_file.name.endswith('.xlsx'):
             raw_df = pd.read_excel(uploaded_file, header=1)
         else:
             raw_df = pd.read_csv(uploaded_file, header=1)
 
-        # Step 1: Clean column names to match the expected format precisely
-        # This cleaning step is highly robust
+        # Step 1: Clean column names
         raw_df.columns = raw_df.columns.astype(str).str.strip().str.replace(r'[^\w\s]', '', regex=True)
         raw_df = raw_df.rename(columns={raw_df.columns[0]: 'No'})
         
@@ -156,15 +146,16 @@ if uploaded_file is not None:
             parsed_results = raw_df.apply(parse_and_split_leave, axis=1)
             new_data = [item for sublist in parsed_results.tolist() for item in sublist]
             
+            # DEFINING FINAL COLUMNS (WITHOUT Sanction authority)
             output_cols_with_keys = [
                 'Name', 'HRMS ID', 'IPAS No', 'Designation', 'Leave Type',
-                'From Date', 'To Date', 'Leave Days', 'Sanction authority'
+                'From Date', 'To Date', 'Leave Days'
             ]
             final_df = pd.DataFrame(new_data, columns=output_cols_with_keys)
             
             # --- FINAL CLEANING AND FORMATTING ---
             
-            # 1. Convert Leave Days to numeric (Fix for 'Expected numeric dtype' error)
+            # 1. Convert Leave Days to numeric
             final_df['Leave Days'] = pd.to_numeric(final_df['Leave Days'], errors='coerce')
 
             # 2. Remove FN/AN from Dates (User Request)
@@ -194,7 +185,7 @@ if uploaded_file is not None:
         st.download_button(
             label="⬇️ संरचित डेटा CSV फ़ाइल डाउनलोड करें",
             data=csv,
-            file_name='Structured_Leave_Report_Clean.csv',
+            file_name='Structured_Leave_Report_Clean_No_Authority.csv',
             mime='text/csv',
         )
 
@@ -208,4 +199,5 @@ st.sidebar.info(
     "1. यह नया कोड कॉपी करें और **`leave_data_processor_final.py`** फ़ाइल को बदल दें।\n"
     "2. टर्मिनल में चलाएँ: `streamlit run leave_data_processor_final.py`\n"
     "3. ब्राउज़र में अपनी raw Excel/CSV फ़ाइल अपलोड करें।"
-)
+            )
+
