@@ -16,7 +16,6 @@ def get_half_day_value(date_str):
     date_part, half_day_part = match.groups()
     date_obj = datetime.strptime(date_part, '%d/%m/%Y')
 
-    # Value: ordinal * 2 + (0 for FN, 1 for AN)
     value = date_obj.toordinal() * 2 + (0 if half_day_part == 'FN' else 1)
     return date_obj, value, half_day_part
 
@@ -26,7 +25,6 @@ def calculate_leave_days(from_dt_str_full, to_dt_str_full):
         _, from_value, _ = get_half_day_value(from_dt_str_full)
         _, to_value, _ = get_half_day_value(to_dt_str_full)
         
-        # Total half-days = (to_value - from_value) + 1 (inclusive count)
         total_half_days = (to_value - from_value) + 1
         return total_half_days / 2
     except ValueError:
@@ -39,36 +37,29 @@ def parse_and_split_leave(row):
     records = []
     
     try:
-        # Define boundary once
         sept_30_an_boundary_val = get_half_day_value('30/09/2025AN')[1]
     except ValueError:
         return records
 
-    # Regex to find all leave segments: (LeaveType) (Days.D) days (DateRange (SanctionAuthority))
-    # We use a non-greedy match for the contents inside the parenthesis: (.*?)
+    # *** FIXED REGEX for robust parsing of date-authority pairs ***
+    # Pattern to find all segments: (LeaveType) (Days.D) days (Content_Inside_Brackets)
     leave_segments = re.findall(r'([A-Z]+)\s+([\d.]+)\s+days\s+\((.*?)\)', leave_details)
 
     for leave_type, total_days_str, date_ranges_str in leave_segments:
-        # We need to split the date ranges reliably, e.g., 'date1, date2'
-        # The split needs to be robust as some date ranges are part of one large segment.
-        # We assume splitting occurs after a closing parenthesis, followed by a comma, but we must handle nested commas in the data.
-        
-        # The best approach for this specific data structure is to identify each complete (date-to-date (Authority)) group
-        # Pattern to find each complete date-authority segment:
-        date_authority_groups = re.findall(r'(.+?FN|.+?AN)-(.+?FN|.+?AN)\s+\((.+?)\s*(.*)\s*\)', date_ranges_str)
+        # Pattern to find each (FromDate-ToDate (AuthorityID) AuthorityName) group within the brackets
+        date_authority_groups = re.findall(r'(\d{2}/\d{2}/\d{4}FN|\d{2}/\d{2}/\d{4}AN)-(\d{2}/\d{2}/\d{4}FN|\d{2}/\d{2}/\d{4}AN)\s*\((.+?)\s*(.*?)\)', date_ranges_str)
 
-        for from_dt_str_full, to_dt_str_full, authority_id_and_name_group, authority_name_part in date_authority_groups:
-            # Reconstruct sanction authority by splitting the combined group from the regex
-            # Authority group looks like: 'SSYXGE) SHIV SHANKAR KUMAR ' or just 'SSYXGE'
+        for from_dt_str_full, to_dt_str_full, authority_id_raw, authority_name_raw in date_authority_groups:
             
-            # The regex groups need careful handling for the sanction authority name
-            sanction_authority_parts = authority_id_and_name_group.split(')')
-            authority_id = sanction_authority_parts[0].strip()
-            # If there's a name part, use it. If not, the ID might be the entire name.
-            if len(sanction_authority_parts) > 1:
-                authority_name = sanction_authority_parts[1].strip() + authority_name_part.strip()
+            # Clean and reconstruct the sanction authority string
+            # The authority_id_raw might contain ID and name separated by ')'.
+            auth_parts = authority_id_raw.split(')')
+            authority_id = auth_parts[0].strip()
+            
+            if len(auth_parts) > 1:
+                authority_name = auth_parts[1].strip() + authority_name_raw.strip()
             else:
-                authority_name = authority_name_part.strip()
+                authority_name = authority_name_raw.strip()
                 
             sanction_authority = f"({authority_id}) {authority_name.strip()}"
             
@@ -82,7 +73,7 @@ def parse_and_split_leave(row):
             is_splittable = leave_type in ['LAP', 'LHAP', 'COL']
             
             if is_splittable and from_value <= sept_30_an_boundary_val and to_value > sept_30_an_boundary_val:
-                # 1. September part (up to 30/09/2025 AN)
+                # 1. September part
                 sept_part_to_dt_full = '30/09/2025AN'
                 sept_days = calculate_leave_days(from_dt_str_full, sept_part_to_dt_full)
                 
@@ -93,7 +84,7 @@ def parse_and_split_leave(row):
                     'Leave Days': sept_days, 'Sanction authority': sanction_authority
                 })
 
-                # 2. October part (from 01/10/2025 FN to end date)
+                # 2. October part
                 oct_part_from_dt_full = '01/10/2025FN'
                 oct_days = calculate_leave_days(oct_part_from_dt_full, to_dt_str_full)
                 
@@ -122,7 +113,7 @@ st.set_page_config(layout="wide", page_title="Leave Data Processor")
 
 st.title(" लीव डेटा प्रोसेसर (Leave Data Processor) 🔄")
 st.markdown("---")
-st.info("यह टूल **FN/AN** हटाकर आउटपुट देता है और **LAP, LHAP, COL** लीव को **30/09/2025** की सीमा पर विभाजित करता है।")
+st.info("यह अंतिम वर्ज़न पार्सिंग को मज़बूत करता है। यह **FN/AN** हटाकर आउटपुट देगा और **LAP, LHAP, COL** लीव को **30/09/2025** की सीमा पर विभाजित करेगा।")
 st.markdown("---")
 
 
