@@ -11,7 +11,6 @@ def get_half_day_value(date_str):
     """Converts a date string (e.g., '17/09/2025FN') into a half-day numeric value for calculation."""
     match = re.search(r'(\d{2}/\d{2}/\d{4})(FN|AN)', date_str)
     if not match:
-        # For calculation, a precise FN/AN is needed.
         raise ValueError(f"Invalid date format: {date_str}")
     
     date_part, half_day_part = match.groups()
@@ -24,8 +23,8 @@ def get_half_day_value(date_str):
 def calculate_leave_days(from_dt_str_full, to_dt_str_full):
     """Calculates leave days based on FN/AN parts for a segment."""
     try:
-        from_date_obj, from_value, _ = get_half_day_value(from_dt_str_full)
-        to_date_obj, to_value, _ = get_half_day_value(to_dt_str_full)
+        _, from_value, _ = get_half_day_value(from_dt_str_full)
+        _, to_value, _ = get_half_day_value(to_dt_str_full)
         
         # Total half-days = (to_value - from_value) + 1 (inclusive count)
         total_half_days = (to_value - from_value) + 1
@@ -43,7 +42,6 @@ def parse_and_split_leave(row):
     try:
         sept_30_an_boundary_val = get_half_day_value('30/09/2025AN')[1]
     except ValueError:
-        # If boundary is invalid, stop processing for this row
         return records
 
     # Regex to find all leave segments: (LeaveType) (Days.D) days (DateRange (SanctionAuthority))
@@ -114,7 +112,7 @@ st.set_page_config(layout="wide", page_title="Leave Data Processor")
 
 st.title(" लीव डेटा प्रोसेसर (Leave Data Processor) 🔄")
 st.markdown("---")
-st.info("यह टूल **LAP, LHAP, और COL** लीव को मासिक सीमा (30/09/2025) पर स्वचालित रूप से विभाजित करता है और आउटपुट तारीखों से FN/AN हटा देता है।")
+st.info("यह टूल **LAP, LHAP, और COL** लीव को मासिक सीमा (**30/09/2025**) पर स्वचालित रूप से विभाजित करता है और आउटपुट तारीखों से **FN/AN** हटा देता है।")
 st.markdown("---")
 
 
@@ -127,19 +125,19 @@ if uploaded_file is not None:
     try:
         # Read the uploaded file
         if uploaded_file.name.endswith('.xlsx'):
-            # Assuming the raw data starts from the second row (index 1) as per previous analysis
+            # Assuming the raw data starts from the second row (index 1) as per user's header
             raw_df = pd.read_excel(uploaded_file, header=1)
         else: # CSV file
             raw_df = pd.read_csv(uploaded_file, header=1)
 
-        # Standardize column names based on previous data structure
+        # Standardize column names based on user's header structure (Row 1 is the header)
         raw_df.columns = raw_df.columns.str.strip().str.replace(r'[^\w\s]', '', regex=True)
         raw_df = raw_df.rename(columns={raw_df.columns[0]: 'No'})
         
-        # Check for required columns
+        # Check for required columns based on the input structure
         required_cols = ['HRMS ID', 'IPAS No', 'Name', 'Designation', 'Leave Details']
         if not all(col in raw_df.columns for col in required_cols):
-            st.error("फ़ाइल में आवश्यक कॉलम नहीं हैं: HRMS ID, IPAS No, Name, Designation, Leave Details। कृपया हेडर (शीर्षक पंक्ति) की जाँच करें।")
+            st.error("फ़ाइल में आवश्यक कॉलम नहीं हैं। कृपया सुनिश्चित करें कि शीर्षक पंक्ति (header) सही है।")
             st.stop()
 
         # Apply the parsing function and flatten the list of lists
@@ -165,7 +163,7 @@ if uploaded_file is not None:
             ]
             final_df = final_df[output_cols]
 
-        st.success(f"✅ डेटा सफलतापूर्वक प्रोसेस किया गया! कुल {len(final_df)} रिकॉर्ड्स तैयार हैं।")
+        st.success(f"✅ डेटा सफलतापूर्वक प्रोसेस किया गया! कुल **{len(final_df)}** रिकॉर्ड्स तैयार हैं।")
         st.markdown("---")
 
         st.subheader("📊 संरचित लीव डेटा का पूर्वावलोकन (Preview of Structured Leave Data)")
@@ -174,7 +172,6 @@ if uploaded_file is not None:
         # --- Download Button ---
         @st.cache_data
         def convert_df_to_csv(df):
-            # IMPORTANT: Cache the conversion to prevent computation on every rerun
             return df.to_csv(index=False).encode('utf-8')
 
         csv = convert_df_to_csv(final_df)
@@ -188,12 +185,12 @@ if uploaded_file is not None:
 
     except Exception as e:
         st.error(f"⚠️ डेटा प्रोसेसिंग में त्रुटि (Error during data processing): {e}")
-        st.error("कृपया सुनिश्चित करें कि आपकी फ़ाइल का फॉर्मेट सही है और हेडर (शीर्षक पंक्ति) पिछली फ़ाइल जैसा ही है।")
+        st.error("कृपया सुनिश्चित करें कि आपकी फ़ाइल का फॉर्मेट सही है और शीर्षक पंक्ति (header) 'HRMS ID, IPAS No, Name...' से शुरू होती है।")
 
 st.sidebar.markdown("---")
 st.sidebar.info(
     "**उपयोग के निर्देश:**\n"
-    "1. `leave_data_processor_clean.py` फ़ाइल को सेव करें।\n"
-    "2. टर्मिनल में चलाएँ: `streamlit run leave_data_processor_clean.py`\n"
+    "1. `leave_data_processor_final.py` फ़ाइल को सेव करें।\n"
+    "2. टर्मिनल में चलाएँ: `streamlit run leave_data_processor_final.py`\n"
     "3. ब्राउज़र में अपनी raw Excel/CSV फ़ाइल अपलोड करें।"
 )
