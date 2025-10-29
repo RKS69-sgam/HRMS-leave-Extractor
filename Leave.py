@@ -197,5 +197,3 @@ st.sidebar.info(
     "2. टर्मिनल में चलाएँ: `streamlit run leave_data_processor_clean.py`\n"
     "3. ब्राउज़र में अपनी raw Excel/CSV फ़ाइल अपलोड करें।"
 )
-।"
-                  )
