@@ -38,7 +38,6 @@ def parse_and_split_leave(row):
     leave_details = row['Leave Details']
     records = []
     
-    # Define the splitting boundary (30th Sep 2025 Afternoon)
     try:
         sept_30_an_boundary_val = get_half_day_value('30/09/2025AN')[1]
     except ValueError:
@@ -48,11 +47,9 @@ def parse_and_split_leave(row):
     leave_segments = re.findall(r'([A-Z]+)\s+([\d.]+)\s+days\s+\((.*?)\)', leave_details)
 
     for leave_type, total_days_str, date_ranges_str in leave_segments:
-        # Split multiple date ranges within a single leave type
         date_authority_pairs = [s.strip() for s in re.split(r'\s*,\s*', date_ranges_str)]
 
         for pair in date_authority_pairs:
-            # Pattern: (FromDateFN/AN)-(ToDateFN/AN) (AuthorityID) AuthorityName
             date_range_match = re.match(r'(.+?FN|.+?AN)-(.+?FN|.+?AN)\s+\((.+?)\)\s*(.*)', pair)
 
             if not date_range_match:
@@ -62,17 +59,15 @@ def parse_and_split_leave(row):
             sanction_authority = f"({authority_id}) {authority_name.strip()}"
             
             try:
-                # Extract half-day values
                 _, from_value, _ = get_half_day_value(from_dt_str_full)
                 _, to_value, _ = get_half_day_value(to_dt_str_full)
             except ValueError:
                 continue
 
-            # --- Splitting Logic (User Requirement) ---
             is_splittable = leave_type in ['LAP', 'LHAP', 'COL']
             
             if is_splittable and from_value <= sept_30_an_boundary_val and to_value > sept_30_an_boundary_val:
-                # 1. September part (up to 30/09/2025 AN)
+                # Splitting Logic (September Part)
                 sept_part_to_dt_full = '30/09/2025AN'
                 sept_days = calculate_leave_days(from_dt_str_full, sept_part_to_dt_full)
                 
@@ -83,7 +78,7 @@ def parse_and_split_leave(row):
                     'Leave Days': sept_days, 'Sanction authority': sanction_authority
                 })
 
-                # 2. October part (from 01/10/2025 FN to end date)
+                # Splitting Logic (October Part)
                 oct_part_from_dt_full = '01/10/2025FN'
                 oct_days = calculate_leave_days(oct_part_from_dt_full, to_dt_str_full)
                 
@@ -112,9 +107,8 @@ st.set_page_config(layout="wide", page_title="Leave Data Processor")
 
 st.title(" लीव डेटा प्रोसेसर (Leave Data Processor) 🔄")
 st.markdown("---")
-st.info("यह टूल **LAP, LHAP, और COL** लीव को मासिक सीमा (**30/09/2025**) पर स्वचालित रूप से विभाजित करता है और आउटपुट तारीखों से **FN/AN** हटा देता है।")
+st.info("यह टूल सुनिश्चित करता है कि आपके द्वारा बताए गए हेडर (जैसे **\#, HRMS ID, IPAS No...**) को सही ढंग से पढ़ा जाए।")
 st.markdown("---")
-
 
 uploaded_file = st.file_uploader(
     "Excel (.xlsx) या CSV फ़ाइल अपलोड करें", 
@@ -123,25 +117,61 @@ uploaded_file = st.file_uploader(
 
 if uploaded_file is not None:
     try:
-        # Read the uploaded file
+        # Read the uploaded file assuming the header is on the SECOND row (index 1)
         if uploaded_file.name.endswith('.xlsx'):
-            # Assuming the raw data starts from the second row (index 1) as per user's header
             raw_df = pd.read_excel(uploaded_file, header=1)
-        else: # CSV file
+        else:
             raw_df = pd.read_csv(uploaded_file, header=1)
 
-        # Standardize column names based on user's header structure (Row 1 is the header)
-        raw_df.columns = raw_df.columns.str.strip().str.replace(r'[^\w\s]', '', regex=True)
+        # Step 1: Clean column names by removing special characters and whitespace
+        raw_df.columns = raw_df.columns.astype(str).str.strip().str.replace(r'[^\w\s]', '', regex=True)
+        
+        # Step 2: Manually check and map the expected columns after cleaning/reading the header
+        # The expected columns are: No, HRMS ID, IPAS No, Name, Department, Designation, Leave Details
+        
+        # This line maps the first clean column to 'No' (which was '#')
         raw_df = raw_df.rename(columns={raw_df.columns[0]: 'No'})
         
-        # Check for required columns based on the input structure
+        # Ensure the required columns exist. We must check for the cleaned names.
         required_cols = ['HRMS ID', 'IPAS No', 'Name', 'Designation', 'Leave Details']
-        if not all(col in raw_df.columns for col in required_cols):
-            st.error("फ़ाइल में आवश्यक कॉलम नहीं हैं। कृपया सुनिश्चित करें कि शीर्षक पंक्ति (header) सही है।")
+        
+        # We assume the columns HRMS ID, IPAS No, etc. are present after cleaning.
+        # Let's clean the column mapping to match the original data format:
+        
+        # Create a mapping of original (cleaned) column names to standard names
+        col_map = {
+            'HRMS ID': 'HRMS ID',
+            'IPAS No': 'IPAS No',
+            'Name': 'Name',
+            'Designation': 'Designation',
+            'Leave Details': 'Leave Details'
+        }
+        
+        # Check for column existence more leniently: find columns containing the required name
+        present_cols = {}
+        for req_col in required_cols:
+            found_col = None
+            for col in raw_df.columns:
+                if req_col.replace(' ', '') in col.replace(' ', ''):
+                    found_col = col
+                    break
+            if found_col:
+                present_cols[found_col] = req_col
+            
+        if len(present_cols) < len(required_cols):
+            st.error("फ़ाइल में आवश्यक कॉलम नहीं हैं।")
+            st.warning(f"अपेक्षित कॉलम: {', '.join(required_cols)}")
+            st.warning(f"फ़ाइल में पाए गए कॉलम (सफाई के बाद): {', '.join(raw_df.columns.tolist())}")
             st.stop()
 
+        # Rename columns to standard names for processing
+        raw_df = raw_df.rename(columns=present_cols)
+        
         # Apply the parsing function and flatten the list of lists
         with st.spinner('डेटा प्रोसेस हो रहा है...'):
+            # Filter rows to only contain required data before processing
+            raw_df = raw_df.dropna(subset=['Leave Details']).reset_index(drop=True)
+
             parsed_results = raw_df.apply(parse_and_split_leave, axis=1)
             new_data = [item for sublist in parsed_results.tolist() for item in sublist]
             final_df = pd.DataFrame(new_data)
@@ -184,8 +214,8 @@ if uploaded_file is not None:
         )
 
     except Exception as e:
-        st.error(f"⚠️ डेटा प्रोसेसिंग में त्रुटि (Error during data processing): {e}")
-        st.error("कृपया सुनिश्चित करें कि आपकी फ़ाइल का फॉर्मेट सही है और शीर्षक पंक्ति (header) 'HRMS ID, IPAS No, Name...' से शुरू होती है।")
+        st.error(f"⚠️ डेटा प्रोसेसिंग में एक अप्रत्याशित त्रुटि आई (An unexpected error occurred during data processing): {e}")
+        st.error("कृपया सुनिश्चित करें कि आपकी फ़ाइल का फॉर्मेट सही है और शीर्षक पंक्ति (header) आपकी कच्ची फ़ाइल में दूसरी पंक्ति में है।")
 
 st.sidebar.markdown("---")
 st.sidebar.info(
