@@ -15,7 +15,6 @@ def get_half_day_value(date_str):
     
     date_part, half_day_part = match.groups()
     date_obj = datetime.strptime(date_part, '%d/%m/%Y')
-
     value = date_obj.toordinal() * 2 + (0 if half_day_part == 'FN' else 1)
     return date_obj, value, half_day_part
 
@@ -24,7 +23,6 @@ def calculate_leave_days(from_dt_str_full, to_dt_str_full):
     try:
         _, from_value, _ = get_half_day_value(from_dt_str_full)
         _, to_value, _ = get_half_day_value(to_dt_str_full)
-        
         total_half_days = (to_value - from_value) + 1
         return total_half_days / 2
     except ValueError:
@@ -33,7 +31,7 @@ def calculate_leave_days(from_dt_str_full, to_dt_str_full):
 def parse_and_split_leave(row):
     """Parses leave details, splits records across the month boundary (30/09/2025 AN to 01/10/2025 FN)
     for LAP, LHAP, COL, and returns a list of dictionaries for each sanctioned segment."""
-    leave_details = row['Leave Details']
+    leave_details = str(row['Leave Details']) # Ensure it is a string
     records = []
     
     try:
@@ -41,26 +39,22 @@ def parse_and_split_leave(row):
     except ValueError:
         return records
 
-    # *** FIXED REGEX for robust parsing of date-authority pairs ***
+    # *** FINAL ROBUST REGEX ***
     # Pattern to find all segments: (LeaveType) (Days.D) days (Content_Inside_Brackets)
     leave_segments = re.findall(r'([A-Z]+)\s+([\d.]+)\s+days\s+\((.*?)\)', leave_details)
 
     for leave_type, total_days_str, date_ranges_str in leave_segments:
-        # Pattern to find each (FromDate-ToDate (AuthorityID) AuthorityName) group within the brackets
-        date_authority_groups = re.findall(r'(\d{2}/\d{2}/\d{4}FN|\d{2}/\d{2}/\d{4}AN)-(\d{2}/\d{2}/\d{4}FN|\d{2}/\d{2}/\d{4}AN)\s*\((.+?)\s*(.*?)\)', date_ranges_str)
+        # Pattern to find each complete date-authority group. This is the most crucial part.
+        # It looks for DATE_FN/AN - DATE_FN/AN (ID) NAME
+        date_authority_groups = re.findall(r'(\d{2}/\d{2}/\d{4}FN|\d{2}/\d{2}/\d{4}AN)-(\d{2}/\d{2}/\d{4}FN|\d{2}/\d{2}/\d{4}AN)\s*\(([^)]*)\)', date_ranges_str)
 
-        for from_dt_str_full, to_dt_str_full, authority_id_raw, authority_name_raw in date_authority_groups:
+        for from_dt_str_full, to_dt_str_full, authority_raw in date_authority_groups:
             
-            # Clean and reconstruct the sanction authority string
-            # The authority_id_raw might contain ID and name separated by ')'.
-            auth_parts = authority_id_raw.split(')')
+            # Extract authority ID and Name
+            auth_parts = authority_raw.split(')')
             authority_id = auth_parts[0].strip()
+            authority_name = auth_parts[1].strip() if len(auth_parts) > 1 else ''
             
-            if len(auth_parts) > 1:
-                authority_name = auth_parts[1].strip() + authority_name_raw.strip()
-            else:
-                authority_name = authority_name_raw.strip()
-                
             sanction_authority = f"({authority_id}) {authority_name.strip()}"
             
             try:
@@ -124,13 +118,13 @@ uploaded_file = st.file_uploader(
 
 if uploaded_file is not None:
     try:
-        # Read the uploaded file assuming the header is on the SECOND row (index 1)
         if uploaded_file.name.endswith('.xlsx'):
             raw_df = pd.read_excel(uploaded_file, header=1)
         else:
             raw_df = pd.read_csv(uploaded_file, header=1)
 
         # Step 1: Clean column names to match the expected format precisely
+        # This cleaning step is highly robust
         raw_df.columns = raw_df.columns.astype(str).str.strip().str.replace(r'[^\w\s]', '', regex=True)
         raw_df = raw_df.rename(columns={raw_df.columns[0]: 'No'})
         
@@ -211,7 +205,7 @@ if uploaded_file is not None:
 st.sidebar.markdown("---")
 st.sidebar.info(
     "**उपयोग के निर्देश:**\n"
-    "1. यह नया कोड कॉपी करें और `leave_data_processor_final.py` फ़ाइल को बदल दें।\n"
+    "1. यह नया कोड कॉपी करें और **`leave_data_processor_final.py`** फ़ाइल को बदल दें।\n"
     "2. टर्मिनल में चलाएँ: `streamlit run leave_data_processor_final.py`\n"
     "3. ब्राउज़र में अपनी raw Excel/CSV फ़ाइल अपलोड करें।"
 )
