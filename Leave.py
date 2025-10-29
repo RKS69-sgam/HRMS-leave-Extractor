@@ -47,11 +47,9 @@ def parse_and_split_leave(row):
     leave_segments = re.findall(r'([A-Z]+)\s+([\d.]+)\s+days\s+\((.*?)\)', leave_details)
 
     for leave_type, total_days_str, date_ranges_str in leave_segments:
-        # We need a robust way to split the date ranges, handling various separators and spaces.
         date_authority_pairs = [s.strip() for s in re.split(r'\s*,\s*', date_ranges_str)]
 
         for pair in date_authority_pairs:
-            # Pattern: (FromDateFN/AN)-(ToDateFN/AN) (AuthorityID) AuthorityName
             date_range_match = re.match(r'(.+?FN|.+?AN)-(.+?FN|.+?AN)\s+\((.+?)\)\s*(.*)', pair)
 
             if not date_range_match:
@@ -61,13 +59,11 @@ def parse_and_split_leave(row):
             sanction_authority = f"({authority_id}) {authority_name.strip()}"
             
             try:
-                # Extract half-day values for splitting logic
                 _, from_value, _ = get_half_day_value(from_dt_str_full)
                 _, to_value, _ = get_half_day_value(to_dt_str_full)
             except ValueError:
                 continue
 
-            # --- Splitting Logic (User Requirement) ---
             is_splittable = leave_type in ['LAP', 'LHAP', 'COL']
             
             if is_splittable and from_value <= sept_30_an_boundary_val and to_value > sept_30_an_boundary_val:
@@ -139,7 +135,6 @@ if uploaded_file is not None:
         for req_col in required_cols:
             found_col = None
             for col in raw_df.columns:
-                # We check if the required name (without space) is in the column name (without space)
                 if req_col.replace(' ', '') in col.replace(' ', ''):
                     found_col = col
                     break
@@ -163,8 +158,6 @@ if uploaded_file is not None:
             parsed_results = raw_df.apply(parse_and_split_leave, axis=1)
             new_data = [item for sublist in parsed_results.tolist() for item in sublist]
             
-            # **FIX:** Ensure the DataFrame is created correctly, filling missing keys with None/NaN
-            # Define the final columns explicitly to avoid KeyError later
             output_cols_with_keys = [
                 'Name', 'HRMS ID', 'IPAS No', 'Designation', 'Leave Type',
                 'From Date', 'To Date', 'Leave Days', 'Sanction authority'
@@ -173,11 +166,14 @@ if uploaded_file is not None:
             
             # --- FINAL CLEANING AND FORMATTING ---
             
+            # **FIX for 'Expected numeric dtype, got object instead': Convert to numeric**
+            final_df['Leave Days'] = pd.to_numeric(final_df['Leave Days'], errors='coerce')
+
             # 1. Remove FN/AN from Dates (User Request)
             final_df['From Date'] = final_df['From Date'].astype(str).str.replace(r'(FN|AN)$', '', regex=True)
             final_df['To Date'] = final_df['To Date'].astype(str).str.replace(r'(FN|AN)$', '', regex=True)
 
-            # 2. Drop rows with NaN in critical columns (likely due to parsing errors)
+            # 2. Drop rows with NaN in critical columns 
             final_df.dropna(subset=['Leave Days', 'From Date', 'To Date'], inplace=True)
             final_df['Leave Days'] = final_df['Leave Days'].round(1)
             
