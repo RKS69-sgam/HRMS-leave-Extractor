@@ -39,23 +39,37 @@ def parse_and_split_leave(row):
     records = []
     
     try:
+        # Define boundary once
         sept_30_an_boundary_val = get_half_day_value('30/09/2025AN')[1]
     except ValueError:
         return records
 
     # Regex to find all leave segments: (LeaveType) (Days.D) days (DateRange (SanctionAuthority))
+    # We use a non-greedy match for the contents inside the parenthesis: (.*?)
     leave_segments = re.findall(r'([A-Z]+)\s+([\d.]+)\s+days\s+\((.*?)\)', leave_details)
 
     for leave_type, total_days_str, date_ranges_str in leave_segments:
-        date_authority_pairs = [s.strip() for s in re.split(r'\s*,\s*', date_ranges_str)]
+        # We need to split the date ranges reliably, e.g., 'date1, date2'
+        # The split needs to be robust as some date ranges are part of one large segment.
+        # We assume splitting occurs after a closing parenthesis, followed by a comma, but we must handle nested commas in the data.
+        
+        # The best approach for this specific data structure is to identify each complete (date-to-date (Authority)) group
+        # Pattern to find each complete date-authority segment:
+        date_authority_groups = re.findall(r'(.+?FN|.+?AN)-(.+?FN|.+?AN)\s+\((.+?)\s*(.*)\s*\)', date_ranges_str)
 
-        for pair in date_authority_pairs:
-            date_range_match = re.match(r'(.+?FN|.+?AN)-(.+?FN|.+?AN)\s+\((.+?)\)\s*(.*)', pair)
-
-            if not date_range_match:
-                continue
-
-            from_dt_str_full, to_dt_str_full, authority_id, authority_name = date_range_match.groups()
+        for from_dt_str_full, to_dt_str_full, authority_id_and_name_group, authority_name_part in date_authority_groups:
+            # Reconstruct sanction authority by splitting the combined group from the regex
+            # Authority group looks like: 'SSYXGE) SHIV SHANKAR KUMAR ' or just 'SSYXGE'
+            
+            # The regex groups need careful handling for the sanction authority name
+            sanction_authority_parts = authority_id_and_name_group.split(')')
+            authority_id = sanction_authority_parts[0].strip()
+            # If there's a name part, use it. If not, the ID might be the entire name.
+            if len(sanction_authority_parts) > 1:
+                authority_name = sanction_authority_parts[1].strip() + authority_name_part.strip()
+            else:
+                authority_name = authority_name_part.strip()
+                
             sanction_authority = f"({authority_id}) {authority_name.strip()}"
             
             try:
@@ -64,6 +78,7 @@ def parse_and_split_leave(row):
             except ValueError:
                 continue
 
+            # --- Splitting Logic (User Requirement) ---
             is_splittable = leave_type in ['LAP', 'LHAP', 'COL']
             
             if is_splittable and from_value <= sept_30_an_boundary_val and to_value > sept_30_an_boundary_val:
@@ -130,7 +145,6 @@ if uploaded_file is not None:
         
         required_cols = ['HRMS ID', 'IPAS No', 'Name', 'Designation', 'Leave Details']
         
-        # Check for column existence more leniently: find columns containing the required name
         present_cols = {}
         for req_col in required_cols:
             found_col = None
@@ -152,7 +166,6 @@ if uploaded_file is not None:
         
         # Apply the parsing function and flatten the list of lists
         with st.spinner('डेटा प्रोसेस हो रहा है...'):
-            # Filter rows to only contain required data before processing
             raw_df = raw_df.dropna(subset=['Leave Details']).reset_index(drop=True)
 
             parsed_results = raw_df.apply(parse_and_split_leave, axis=1)
@@ -166,18 +179,18 @@ if uploaded_file is not None:
             
             # --- FINAL CLEANING AND FORMATTING ---
             
-            # **FIX for 'Expected numeric dtype, got object instead': Convert to numeric**
+            # 1. Convert Leave Days to numeric (Fix for 'Expected numeric dtype' error)
             final_df['Leave Days'] = pd.to_numeric(final_df['Leave Days'], errors='coerce')
 
-            # 1. Remove FN/AN from Dates (User Request)
+            # 2. Remove FN/AN from Dates (User Request)
             final_df['From Date'] = final_df['From Date'].astype(str).str.replace(r'(FN|AN)$', '', regex=True)
             final_df['To Date'] = final_df['To Date'].astype(str).str.replace(r'(FN|AN)$', '', regex=True)
 
-            # 2. Drop rows with NaN in critical columns 
+            # 3. Drop rows with NaN in critical columns (parsing/calculation errors)
             final_df.dropna(subset=['Leave Days', 'From Date', 'To Date'], inplace=True)
             final_df['Leave Days'] = final_df['Leave Days'].round(1)
             
-            # 3. Select and reorder the final columns
+            # 4. Select and reorder the final columns
             final_df = final_df[output_cols_with_keys]
 
         st.success(f"✅ डेटा सफलतापूर्वक प्रोसेस किया गया! कुल **{len(final_df)}** रिकॉर्ड्स तैयार हैं।")
