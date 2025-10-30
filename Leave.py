@@ -28,8 +28,7 @@ def calculate_leave_days(from_dt_str_full, to_dt_str_full):
         return np.nan
 
 def parse_and_split_leave(row):
-    """Parses leave details, splits records across the month boundary (30/09/2025 AN to 01/10/2025 FN)
-    for LAP, LHAP, COL, and returns a list of dictionaries for each sanctioned segment."""
+    """Parses leave details, splits records across the month boundary (30/09/2025 AN to 01/10/2025 FN)"""
     leave_details = str(row['Leave Details'])
     records = []
     
@@ -38,19 +37,15 @@ def parse_and_split_leave(row):
     except ValueError:
         return records
 
-    # *** FIXED REGEX: Allows an optional trailing bracket ')?' after the main content ***
-    # Pattern to find all segments: (LeaveType) (Days.D) days (Content_Inside_Brackets)
-    # The ')?' at the end of the regex allows for the unexpected closing bracket in the raw data.
+    # Regex to find all segments: (LeaveType) (Days.D) days (Content_Inside_Brackets)
+    # The ')?' at the end allows for the extra closing bracket found in the data.
     leave_segments = re.findall(r'([A-Z]+)\s+([\d.]+)\s+days\s+\((.*?)\)?', leave_details)
 
     for leave_type, total_days_str, date_ranges_str in leave_segments:
         # Pattern to find each complete date group: DATE_FN/AN - DATE_FN/AN (Anything_Inside_Brackets)
-        # We ensure the full date format is matched within the captured 'date_ranges_str'
         date_groups = re.findall(r'(\d{2}/\d{2}/\d{4}FN|\d{2}/\d{2}/\d{4}AN)-(\d{2}/\d{2}/\d{4}FN|\d{2}/\d{2}/\d{4}AN)\s*\(([^)]*)\)', date_ranges_str)
 
         for from_dt_str_full, to_dt_str_full, authority_raw in date_groups: 
-            
-            # Since we are removing Sanction Authority from the final table, we just parse the dates.
             
             try:
                 _, from_value, _ = get_half_day_value(from_dt_str_full)
@@ -61,14 +56,18 @@ def parse_and_split_leave(row):
             # --- Splitting Logic (User Requirement) ---
             is_splittable = leave_type in ['LAP', 'LHAP', 'COL']
             
+            common_data = {
+                'Name': row['Name'], 'HRMS ID': row['HRMS ID'], 'IPAS No': row['IPAS No'], 
+                'Designation': row['Designation'], 'Leave Type': leave_type
+            }
+
             if is_splittable and from_value <= sept_30_an_boundary_val and to_value > sept_30_an_boundary_val:
                 # 1. September part
                 sept_part_to_dt_full = '30/09/2025AN'
                 sept_days = calculate_leave_days(from_dt_str_full, sept_part_to_dt_full)
                 
                 records.append({
-                    'Name': row['Name'], 'HRMS ID': row['HRMS ID'], 'IPAS No': row['IPAS No'], 
-                    'Designation': row['Designation'], 'Leave Type': leave_type, 
+                    **common_data, 
                     'From Date': from_dt_str_full, 'To Date': sept_part_to_dt_full, 
                     'Leave Days': sept_days
                 })
@@ -78,8 +77,7 @@ def parse_and_split_leave(row):
                 oct_days = calculate_leave_days(oct_part_from_dt_full, to_dt_str_full)
                 
                 records.append({
-                    'Name': row['Name'], 'HRMS ID': row['HRMS ID'], 'IPAS No': row['IPAS No'], 
-                    'Designation': row['Designation'], 'Leave Type': leave_type, 
+                    **common_data, 
                     'From Date': oct_part_from_dt_full, 'To Date': to_dt_str_full, 
                     'Leave Days': oct_days
                 })
@@ -88,8 +86,7 @@ def parse_and_split_leave(row):
                 # No splitting required
                 segment_days_calculated = calculate_leave_days(from_dt_str_full, to_dt_str_full)
                 records.append({
-                    'Name': row['Name'], 'HRMS ID': row['HRMS ID'], 'IPAS No': row['IPAS No'], 
-                    'Designation': row['Designation'], 'Leave Type': leave_type, 
+                    **common_data, 
                     'From Date': from_dt_str_full, 'To Date': to_dt_str_full, 
                     'Leave Days': segment_days_calculated
                 })
@@ -102,7 +99,7 @@ st.set_page_config(layout="wide", page_title="Leave Data Processor")
 
 st.title(" लीव डेटा प्रोसेसर (Leave Data Processor) 🔄")
 st.markdown("---")
-st.info("यह अंतिम वर्ज़न अतिरिक्त ब्रैकेट `)` को नज़रअंदाज़ करता है और आपकी सभी आवश्यकताओं को पूरा करता है।")
+st.info("यह नया वर्ज़न पहली पंक्ति (row 0) को हेडर के रूप में उपयोग करता है और डेटा को इंडेक्स द्वारा मैप करता है।")
 st.markdown("---")
 
 
@@ -113,33 +110,49 @@ uploaded_file = st.file_uploader(
 
 if uploaded_file is not None:
     try:
+        # ** FIX: Use header=0 as requested **
         if uploaded_file.name.endswith('.xlsx'):
-            raw_df = pd.read_excel(uploaded_file, header=1)
+            raw_df = pd.read_excel(uploaded_file, header=0)
         else:
-            raw_df = pd.read_csv(uploaded_file, header=1)
-
-        raw_df.columns = raw_df.columns.astype(str).str.strip().str.replace(r'[^\w\s]', '', regex=True)
-        raw_df = raw_df.rename(columns={raw_df.columns[0]: 'No'})
-        
-        required_cols = ['HRMS ID', 'IPAS No', 'Name', 'Designation', 'Leave Details']
-        
-        present_cols = {}
-        for req_col in required_cols:
-            found_col = None
-            for col in raw_df.columns:
-                if req_col.replace(' ', '') in col.replace(' ', ''):
-                    found_col = col
-                    break
-            if found_col:
-                present_cols[found_col] = req_col
+            raw_df = pd.read_csv(uploaded_file, header=0)
             
-        if len(present_cols) < len(required_cols):
-            st.error("फ़ाइल में आवश्यक कॉलम नहीं हैं।")
-            st.warning(f"अपेक्षित कॉलम: {', '.join(required_cols)}")
-            st.stop()
+        # The true headers are now the first row (index 0) of the data. Drop them.
+        raw_df = raw_df.iloc[1:].reset_index(drop=True)
 
-        raw_df = raw_df.rename(columns=present_cols)
+        # Map the column by their numerical position (index)
+        # This is necessary because 'header=0' gives us unhelpful column names like 'Unnamed: 1'
+        # The expected column indices (0-based) are:
+        # 0: # (Ignored)
+        # 1: HRMS ID
+        # 2: IPAS No
+        # 3: Name
+        # 4: Department (Ignored)
+        # 5: Designation
+        # 6: Leave Details
         
+        # We need to explicitly rename based on index as the names are garbage now
+        raw_df.columns = [f'Col_{i}' for i in range(len(raw_df.columns))]
+
+        # Mapping the required columns by their known index position
+        required_col_map = {
+            'HRMS ID': 'Col_1', 
+            'IPAS No': 'Col_2', 
+            'Name': 'Col_3', 
+            'Designation': 'Col_5', 
+            'Leave Details': 'Col_6'
+        }
+        
+        # Check if all required indices are present (should be, unless file is malformed)
+        for col in required_col_col_map.values():
+            if col not in raw_df.columns:
+                 st.error(f"❌ त्रुटि: अपेक्षित डेटा कॉलम {col} फ़ाइल में नहीं मिला।")
+                 st.stop()
+
+
+        # Rename columns to standard names for processing
+        raw_df = raw_df.rename(columns={v: k for k, v in required_col_map.items()})
+        
+        # Apply the parsing function and flatten the list of lists
         with st.spinner('डेटा प्रोसेस हो रहा है...'):
             raw_df = raw_df.dropna(subset=['Leave Details']).reset_index(drop=True)
 
@@ -184,13 +197,13 @@ if uploaded_file is not None:
         st.download_button(
             label="⬇️ संरचित डेटा CSV फ़ाइल डाउनलोड करें",
             data=csv,
-            file_name='Structured_Leave_Report_Clean_Final.csv',
+            file_name='Structured_Leave_Report_Clean_Final_V2.csv',
             mime='text/csv',
         )
 
     except Exception as e:
         st.error(f"⚠️ डेटा प्रोसेसिंग में एक अप्रत्याशित त्रुटि आई (An unexpected error occurred during data processing): {e}")
-        st.error("कृपया सुनिश्चित करें कि आपकी फ़ाइल का फॉर्मेट सही है और शीर्षक पंक्ति (header) आपकी कच्ची फ़ाइल में दूसरी पंक्ति में है।")
+        st.error("यह त्रुटि इंगित करती है कि या तो फ़ाइल का फॉर्मेट पूरी तरह से बदल गया है या डेटा पार्सिंग में एक नया अनपेक्षित वर्ण (character) है।")
 
 st.sidebar.markdown("---")
 st.sidebar.info(
