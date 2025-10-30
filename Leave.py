@@ -37,8 +37,7 @@ def parse_and_split_leave(row):
     except ValueError:
         return records
 
-    # Regex to find all segments: (LeaveType) (Days.D) days (Content_Inside_Brackets)
-    # The ')?' at the end allows for the extra closing bracket found in the data.
+    # Regex is robust for the most common errors (extra brackets, etc.)
     leave_segments = re.findall(r'([A-Z]+)\s+([\d.]+)\s+days\s+\((.*?)\)?', leave_details)
 
     for leave_type, total_days_str, date_ranges_str in leave_segments:
@@ -110,30 +109,20 @@ uploaded_file = st.file_uploader(
 
 if uploaded_file is not None:
     try:
-        # ** FIX: Use header=0 as requested **
+        # ** FIX: Read header=0 and then rename columns by index position **
         if uploaded_file.name.endswith('.xlsx'):
             raw_df = pd.read_excel(uploaded_file, header=0)
         else:
+            # For CSV, we read header=0
             raw_df = pd.read_csv(uploaded_file, header=0)
-            
-        # The true headers are now the first row (index 0) of the data. Drop them.
-        raw_df = raw_df.iloc[1:].reset_index(drop=True)
-
-        # Map the column by their numerical position (index)
-        # This is necessary because 'header=0' gives us unhelpful column names like 'Unnamed: 1'
-        # The expected column indices (0-based) are:
-        # 0: # (Ignored)
-        # 1: HRMS ID
-        # 2: IPAS No
-        # 3: Name
-        # 4: Department (Ignored)
-        # 5: Designation
-        # 6: Leave Details
         
-        # We need to explicitly rename based on index as the names are garbage now
+        # We need to map the data columns by their index position (0-based)
+        # Assuming the structure is: [Col 0] [Col 1] [Col 2] [Col 3] [Col 4] [Col 5] [Col 6]
+        
+        # Clean up column names by index, as they are likely 'Unnamed: X' or junk
         raw_df.columns = [f'Col_{i}' for i in range(len(raw_df.columns))]
 
-        # Mapping the required columns by their known index position
+        # Map the required columns by their known index position:
         required_col_map = {
             'HRMS ID': 'Col_1', 
             'IPAS No': 'Col_2', 
@@ -142,15 +131,19 @@ if uploaded_file is not None:
             'Leave Details': 'Col_6'
         }
         
-        # Check if all required indices are present (should be, unless file is malformed)
-        for col in required_col_col_map.values():
-            if col not in raw_df.columns:
-                 st.error(f"❌ त्रुटि: अपेक्षित डेटा कॉलम {col} फ़ाइल में नहीं मिला।")
+        # Check if all required columns indices are actually present
+        for col_name in required_col_map.values():
+            if col_name not in raw_df.columns:
+                 st.error(f"❌ त्रुटि: अपेक्षित डेटा कॉलम {col_name} फ़ाइल में नहीं मिला।")
                  st.stop()
-
 
         # Rename columns to standard names for processing
         raw_df = raw_df.rename(columns={v: k for k, v in required_col_map.items()})
+        
+        # Drop the first row (index 0) of the loaded DataFrame because it contains the *actual* header names, not data.
+        # This is a key step when forcing header=0 on this specific file format.
+        raw_df = raw_df.iloc[1:].reset_index(drop=True)
+
         
         # Apply the parsing function and flatten the list of lists
         with st.spinner('डेटा प्रोसेस हो रहा है...'):
@@ -197,13 +190,13 @@ if uploaded_file is not None:
         st.download_button(
             label="⬇️ संरचित डेटा CSV फ़ाइल डाउनलोड करें",
             data=csv,
-            file_name='Structured_Leave_Report_Clean_Final_V2.csv',
+            file_name='Structured_Leave_Report_Clean_Final_V3.csv',
             mime='text/csv',
         )
 
     except Exception as e:
         st.error(f"⚠️ डेटा प्रोसेसिंग में एक अप्रत्याशित त्रुटि आई (An unexpected error occurred during data processing): {e}")
-        st.error("यह त्रुटि इंगित करती है कि या तो फ़ाइल का फॉर्मेट पूरी तरह से बदल गया है या डेटा पार्सिंग में एक नया अनपेक्षित वर्ण (character) है।")
+        st.error("कृपया सुनिश्चित करें कि आपकी फ़ाइल का फॉर्मेट सही है और शीर्षक पंक्ति (header) आपकी कच्ची फ़ाइल में **पहली पंक्ति** में है।")
 
 st.sidebar.markdown("---")
 st.sidebar.info(
