@@ -98,7 +98,7 @@ st.set_page_config(layout="wide", page_title="Leave Data Processor")
 
 st.title(" लीव डेटा प्रोसेसर (Leave Data Processor) 🔄")
 st.markdown("---")
-st.info("यह नया वर्ज़न पहली पंक्ति (row 0) को हेडर के रूप में उपयोग करता है और डेटा को इंडेक्स द्वारा मैप करता है।")
+st.info("यह अंतिम वर्ज़न फ़ाइल को बिना हेडर के लोड करता है और इंडेक्स द्वारा डेटा को मैप करता है।")
 st.markdown("---")
 
 
@@ -109,20 +109,26 @@ uploaded_file = st.file_uploader(
 
 if uploaded_file is not None:
     try:
-        # ** FIX: Read header=0 and then rename columns by index position **
+        # ** FIX: Load with NO HEADER and specify column names later **
         if uploaded_file.name.endswith('.xlsx'):
-            raw_df = pd.read_excel(uploaded_file, header=0)
+            # Read header=None to treat the file as raw data
+            raw_df = pd.read_excel(uploaded_file, header=None)
         else:
-            # For CSV, we read header=0
-            raw_df = pd.read_csv(uploaded_file, header=0)
+            # Read header=None for CSV
+            raw_df = pd.read_csv(uploaded_file, header=None)
+
         
-        # We need to map the data columns by their index position (0-based)
+        # We need to map the data columns by their numerical position (index)
         # Assuming the structure is: [Col 0] [Col 1] [Col 2] [Col 3] [Col 4] [Col 5] [Col 6]
         
-        # Clean up column names by index, as they are likely 'Unnamed: X' or junk
+        # 1. Drop the file-title row (Row 0)
+        raw_df = raw_df.iloc[1:].reset_index(drop=True)
+        
+        # 2. Assign the standard column names based on the known index positions (0-based)
+        # Note: Columns are now 0, 1, 2, 3, 4, 5, 6...
         raw_df.columns = [f'Col_{i}' for i in range(len(raw_df.columns))]
 
-        # Map the required columns by their known index position:
+        # Mapping the required columns by their known index position:
         required_col_map = {
             'HRMS ID': 'Col_1', 
             'IPAS No': 'Col_2', 
@@ -140,11 +146,10 @@ if uploaded_file is not None:
         # Rename columns to standard names for processing
         raw_df = raw_df.rename(columns={v: k for k, v in required_col_map.items()})
         
-        # Drop the first row (index 0) of the loaded DataFrame because it contains the *actual* header names, not data.
-        # This is a key step when forcing header=0 on this specific file format.
+        # Drop the header row (which is now at index 0, since we dropped the file-title row)
         raw_df = raw_df.iloc[1:].reset_index(drop=True)
 
-        
+
         # Apply the parsing function and flatten the list of lists
         with st.spinner('डेटा प्रोसेस हो रहा है...'):
             raw_df = raw_df.dropna(subset=['Leave Details']).reset_index(drop=True)
@@ -190,13 +195,13 @@ if uploaded_file is not None:
         st.download_button(
             label="⬇️ संरचित डेटा CSV फ़ाइल डाउनलोड करें",
             data=csv,
-            file_name='Structured_Leave_Report_Clean_Final_V3.csv',
+            file_name='Structured_Leave_Report_Clean_Final_V4.csv',
             mime='text/csv',
         )
 
     except Exception as e:
         st.error(f"⚠️ डेटा प्रोसेसिंग में एक अप्रत्याशित त्रुटि आई (An unexpected error occurred during data processing): {e}")
-        st.error("कृपया सुनिश्चित करें कि आपकी फ़ाइल का फॉर्मेट सही है और शीर्षक पंक्ति (header) आपकी कच्ची फ़ाइल में **पहली पंक्ति** में है।")
+        st.error("यह अंतिम त्रुटि इंगित करती है कि या तो फ़ाइल का फॉर्मेट पूरी तरह से बदल गया है या डेटा पार्सिंग में एक नया अनपेक्षित वर्ण (character) है।")
 
 st.sidebar.markdown("---")
 st.sidebar.info(
