@@ -38,14 +38,19 @@ def parse_and_split_leave(row):
     except ValueError:
         return records
 
-    # Regex to find all segments: (LeaveType) (Days.D) days (Content_Inside_Brackets)
-    leave_segments = re.findall(r'([A-Z]+)\s+([\d.]+)\s+days\s+\((.*?)\)', leave_details)
+    # *** FIXED REGEX: Allows an optional trailing bracket ')?' after the main content ***
+    # Pattern to find all segments: (LeaveType) (Days.D) days (Content_Inside_Brackets)
+    # The ')?' at the end of the regex allows for the unexpected closing bracket in the raw data.
+    leave_segments = re.findall(r'([A-Z]+)\s+([\d.]+)\s+days\s+\((.*?)\)?', leave_details)
 
     for leave_type, total_days_str, date_ranges_str in leave_segments:
         # Pattern to find each complete date group: DATE_FN/AN - DATE_FN/AN (Anything_Inside_Brackets)
+        # We ensure the full date format is matched within the captured 'date_ranges_str'
         date_groups = re.findall(r'(\d{2}/\d{2}/\d{4}FN|\d{2}/\d{2}/\d{4}AN)-(\d{2}/\d{2}/\d{4}FN|\d{2}/\d{2}/\d{4}AN)\s*\(([^)]*)\)', date_ranges_str)
 
-        for from_dt_str_full, to_dt_str_full, _ in date_groups: # Authority info is captured but ignored by '_'
+        for from_dt_str_full, to_dt_str_full, authority_raw in date_groups: 
+            
+            # Since we are removing Sanction Authority from the final table, we just parse the dates.
             
             try:
                 _, from_value, _ = get_half_day_value(from_dt_str_full)
@@ -97,11 +102,100 @@ st.set_page_config(layout="wide", page_title="Leave Data Processor")
 
 st.title(" लीव डेटा प्रोसेसर (Leave Data Processor) 🔄")
 st.markdown("---")
-st.info("यह टूल **Sanction Authority** को हटाता है, **LAP, LHAP, COL** लीव को **30/09/2025** की सीमा पर विभाजित करता है, और तारीखों से **FN/AN** हटाता है।")
+st.info("यह अंतिम वर्ज़न अतिरिक्त ब्रैकेट `)` को नज़रअंदाज़ करता है और आपकी सभी आवश्यकताओं को पूरा करता है।")
 st.markdown("---")
 
 
 uploaded_file = st.file_uploader(
     "Excel (.xlsx) या CSV फ़ाइल अपलोड करें", 
     type=['xlsx', 'csv']
+)
+
+if uploaded_file is not None:
+    try:
+        if uploaded_file.name.endswith('.xlsx'):
+            raw_df = pd.read_excel(uploaded_file, header=1)
+        else:
+            raw_df = pd.read_csv(uploaded_file, header=1)
+
+        raw_df.columns = raw_df.columns.astype(str).str.strip().str.replace(r'[^\w\s]', '', regex=True)
+        raw_df = raw_df.rename(columns={raw_df.columns[0]: 'No'})
+        
+        required_cols = ['HRMS ID', 'IPAS No', 'Name', 'Designation', 'Leave Details']
+        
+        present_cols = {}
+        for req_col in required_cols:
+            found_col = None
+            for col in raw_df.columns:
+                if req_col.replace(' ', '') in col.replace(' ', ''):
+                    found_col = col
+                    break
+            if found_col:
+                present_cols[found_col] = req_col
+            
+        if len(present_cols) < len(required_cols):
+            st.error("फ़ाइल में आवश्यक कॉलम नहीं हैं।")
+            st.warning(f"अपेक्षित कॉलम: {', '.join(required_cols)}")
+            st.stop()
+
+        raw_df = raw_df.rename(columns=present_cols)
+        
+        with st.spinner('डेटा प्रोसेस हो रहा है...'):
+            raw_df = raw_df.dropna(subset=['Leave Details']).reset_index(drop=True)
+
+            parsed_results = raw_df.apply(parse_and_split_leave, axis=1)
+            new_data = [item for sublist in parsed_results.tolist() for item in sublist]
+            
+            # DEFINING FINAL COLUMNS (WITHOUT Sanction authority)
+            output_cols_with_keys = [
+                'Name', 'HRMS ID', 'IPAS No', 'Designation', 'Leave Type',
+                'From Date', 'To Date', 'Leave Days'
+            ]
+            final_df = pd.DataFrame(new_data, columns=output_cols_with_keys)
+            
+            # --- FINAL CLEANING AND FORMATTING ---
+            
+            final_df['Leave Days'] = pd.to_numeric(final_df['Leave Days'], errors='coerce')
+
+            # 1. Remove FN/AN from Dates (User Request)
+            final_df['From Date'] = final_df['From Date'].astype(str).str.replace(r'(FN|AN)$', '', regex=True)
+            final_df['To Date'] = final_df['To Date'].astype(str).str.replace(r'(FN|AN)$', '', regex=True)
+
+            # 2. Drop rows with NaN in critical columns (parsing/calculation errors)
+            final_df.dropna(subset=['Leave Days', 'From Date', 'To Date'], inplace=True)
+            final_df['Leave Days'] = final_df['Leave Days'].round(1)
+            
+            # 3. Select and reorder the final columns
+            final_df = final_df[output_cols_with_keys]
+
+        st.success(f"✅ डेटा सफलतापूर्वक प्रोसेस किया गया! कुल **{len(final_df)}** रिकॉर्ड्स तैयार हैं।")
+        st.markdown("---")
+
+        st.subheader("📊 संरचित लीव डेटा का पूर्वावलोकन (Preview of Structured Leave Data)")
+        st.dataframe(final_df, height=300)
+
+        # --- Download Button ---
+        @st.cache_data
+        def convert_df_to_csv(df):
+            return df.to_csv(index=False).encode('utf-8')
+
+        csv = convert_df_to_csv(final_df)
+
+        st.download_button(
+            label="⬇️ संरचित डेटा CSV फ़ाइल डाउनलोड करें",
+            data=csv,
+            file_name='Structured_Leave_Report_Clean_Final.csv',
+            mime='text/csv',
+        )
+
+    except Exception as e:
+        st.error(f"⚠️ डेटा प्रोसेसिंग में एक अप्रत्याशित त्रुटि आई (An unexpected error occurred during data processing): {e}")
+        st.error("कृपया सुनिश्चित करें कि आपकी फ़ाइल का फॉर्मेट सही है और शीर्षक पंक्ति (header) आपकी कच्ची फ़ाइल में दूसरी पंक्ति में है।")
+
+st.sidebar.markdown("---")
+st.sidebar.info(
+    "**उपयोग के निर्देश:**\n"
+    "1. यह नया कोड कॉपी करें और **`leave_data_processor_final.py`** फ़ाइल को बदल दें।\n"
+    "2. टर्मिनल में चलाएँ: `streamlit run leave_data_processor_final.py`\n"
+    "3. ब्राउज़र में अपनी raw Excel/CSV फ़ाइल अपलोड करें।"
 )
